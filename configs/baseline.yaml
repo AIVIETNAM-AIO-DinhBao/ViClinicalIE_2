@@ -8,7 +8,7 @@ kb:
   device: auto            # auto | cpu | cuda:N | wait
 
 ner:
-  model: E3-JSI/gliner-multi-med-ner-synthetic-v1  # urchade/gliner_multi-v2.1
+  model: Ihor/gliner-biomed-base-v1.0 # E3-JSI/gliner-multi-med-ner-synthetic-v1  # urchade/gliner_multi-v2.1
   threshold: 0.35         # recall regime: ~15 concepts/file is the scoring sweet spot
   max_chunk_chars: 800
   # descriptive English labels generalise best in GLiNER -> canonical Task-2 type
