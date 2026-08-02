@@ -1,4 +1,4 @@
-"""Jinja prompt loader — all LLM prompts live as .jinja in /prompts."""
+"""Jinja prompt loader — prompts ship inside the package at ``medextract/prompts``."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -6,7 +6,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
+PROMPTS_DIR = Path(__file__).resolve().parents[1] / "prompts"
 
 
 @lru_cache(maxsize=1)

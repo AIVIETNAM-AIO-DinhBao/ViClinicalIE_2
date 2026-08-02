@@ -7,7 +7,7 @@ the codes above a similarity cutoff.
 
 Two small, general refinements matter for this task:
 * Drugs: strip route/frequency tokens ("po", "bid") but keep the strength, since
-  the gold RxNorm code is the strength-specific clinical drug (e.g. "amlodipine
+  mã RxNorm tham chiếu là clinical drug kèm hàm lượng cụ thể (e.g. "amlodipine
   10 mg" -> "Amlodipine 10 MG Oral Tablet"). A term-type (tty) filter keeps only
   those clinical-drug (SCD) hits.
 * Candidates are capped low per KB: the candidate score is a Jaccard, so one
@@ -40,7 +40,6 @@ class RetrieverNormalizer(Normalizer):
         cutoffs: Optional[Dict[str, float]] = None,
         max_candidates: Optional[Dict[str, int]] = None,
         strip_drug_noise: bool = True,
-        prefer_tty: Optional[Dict[str, List[str]]] = None,
         filter_tty: Optional[Dict[str, List[str]]] = None,
     ):
         self.indexes = indexes
@@ -48,7 +47,6 @@ class RetrieverNormalizer(Normalizer):
         self.cutoffs = cutoffs or {"ICD10": 0.70, "RXNORM": 0.80}
         self.max_candidates = max_candidates or {"ICD10": 2, "RXNORM": 1}
         self.strip_drug_noise = strip_drug_noise
-        self.prefer_tty = prefer_tty or {}
         self.filter_tty = filter_tty or {}
 
     def _clean_mention(self, mention: str, kb: str) -> str:
@@ -86,16 +84,6 @@ class RetrieverNormalizer(Normalizer):
         if not hits:
             return []
 
-        # prefer a specific term type (e.g. SCD for drugs) when a preferred hit is
-        # within a small score margin of the top hit
-        preferred = self.prefer_tty.get(kb)
-        if preferred:
-            top_score = hits[0][2]
-            for h in hits:
-                if h[3] in preferred and (top_score - h[2]) <= 0.05:
-                    hits = [h] + [x for x in hits if x is not h]
-                    break
-
         cap = self.max_candidates.get(kb, 2)
         codes: List[str] = []
         for code, _name, _score, _tty in hits:
@@ -129,6 +117,5 @@ def from_config(cfg: dict) -> RetrieverNormalizer:
         cutoffs=n.get("cutoffs", {"ICD10": 0.70, "RXNORM": 0.80}),
         max_candidates=n.get("max_candidates", {"ICD10": 2, "RXNORM": 1}),
         strip_drug_noise=n.get("strip_drug_noise", True),
-        prefer_tty=n.get("prefer_tty", {}),
         filter_tty=n.get("filter_tty", {}),
     )

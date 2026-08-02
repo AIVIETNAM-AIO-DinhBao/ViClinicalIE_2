@@ -1,7 +1,18 @@
-"""Pipeline: compose NER + assertions + normalization into per-record concepts.
+"""Pipeline: compose NER + (assertions) + normalization into per-record concepts.
 
-The same ``Pipeline`` object is used by ``main.py`` (batch/zip) and ``serve.py``
-(API). Stages are pluggable; any may be ``None`` (e.g. dummy solution).
+A single config-driven entry point. ``build_pipeline`` dispatches on the
+``solution`` key in the config:
+
+* ``baseline`` / ``improved`` — :class:`Pipeline`: GLiNER NER + ConText rule
+  assertions + SapBERT retrieval (``improved`` adds an LLM rerank over retrieved
+  candidates).
+* ``improved_v2`` — :class:`PipelineV2`: GLiNER NER (per-type thresholds) + a
+  two-teacher consensus selector (TRIỆU→CHẨN correction + non-candidate additions)
+  + precision-first lexical linking + empty assertions.
+
+The host scorer double-penalises spurious concepts, so ``improved_v2`` keeps
+GLiNER's precision over higher recall and links candidates only on a unique exact
+alias. Used by ``run.py`` (batch over an input dir, optional zip).
 """
 from __future__ import annotations
 
@@ -24,14 +35,35 @@ from .schema import (
 log = logging.getLogger("medextract.pipeline")
 
 
-def build_pipeline(config: dict, engine=None) -> "Pipeline":
-    """Build the full pipeline from a config dict.
+def build_pipeline(config: dict, engine=None):
+    """Build a pipeline from a config dict. Dispatches on ``solution``."""
+    if (config or {}).get("solution") == "improved_v2":
+        return _build_v2(config)
+    return _build_legacy(config, engine=engine)
 
-    NER is always GLiNER; assertions are always the ConText rule engine. The
-    normalizer is the plain SapBERT retriever unless the config declares a
-    ``normalization.llm_rerank`` block, in which case a local LLM reranks the
-    retrieved candidates (pass an existing ``engine`` to reuse one).
-    """
+
+def _build_v2(config: dict):
+    from .models.registry import get_registry
+    from .ner.gliner_ner import from_config as build_ner
+    from .normalization.exact_alias_normalizer import from_config as build_norm
+    from .selector import from_config as build_selector
+
+    cfg = config or {}
+    models_cfg = cfg.get("models", {}) or {}
+    get_registry(max_total_parameters=models_cfg.get("max_total_parameters", 9_000_000_000))
+
+    bnd = cfg.get("boundary", {}) or {}
+    return PipelineV2(
+        ner=build_ner(cfg),            # GLiNER (per-type thresholds)
+        normalizer=build_norm(cfg),    # precision-first lexical linking
+        selector=build_selector(cfg),  # TRIỆU→CHẨN corrector + additions (None if disabled)
+        name=cfg.get("solution", "improved_v2"),
+        trim_generic=bool(bnd.get("generic_prefix", True)),
+    )
+
+
+def _build_legacy(config: dict, engine=None) -> "Pipeline":
+    """Legacy baseline/improved build (GLiNER + ConText + SapBERT/LLM-rerank)."""
     from .ner.gliner_ner import from_config as build_ner
     from .assertions.context_rules import from_config as build_assertions
 
@@ -42,7 +74,7 @@ def build_pipeline(config: dict, engine=None) -> "Pipeline":
             from .llm.engine import LLMEngine
             lc = (config or {}).get("llm", {}) or {}
             engine = LLMEngine(
-                model_name=lc.get("model", "/mnt/pretrained_fm/Qwen_Qwen3-8B"),
+                model_name=lc.get("model", "Qwen/Qwen3-8B"),
                 device=lc.get("device", "wait"),
                 dtype=lc.get("dtype", "bfloat16"),
                 min_free_gb=lc.get("min_free_gb", 18.0),
@@ -73,7 +105,30 @@ def pipeline_opts(config: dict) -> dict:
     )
 
 
+def _run_dir(pipe, in_dir, out_dir, zip_it: bool = True) -> None:
+    """Run ``pipe.run_text`` over every ``*.txt`` in ``in_dir``; write per-stem
+    JSON to ``out_dir``; optionally zip a flat ``submission.zip``.
+
+    Shared by :class:`Pipeline` and :class:`PipelineV2` — identical loop, write,
+    and logging, so both tiers produce the same on-disk layout.
+    """
+    in_dir, out_dir = Path(in_dir), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    inputs = io_utils.list_inputs(in_dir)
+    log.info("[%s] running over %d files -> %s", pipe.name, len(inputs), out_dir)
+    for i, path in enumerate(inputs, 1):
+        text = io_utils.read_text(path)
+        io_utils.write_record(out_dir, path.stem, pipe.run_text(text), text)
+        if i % 10 == 0 or i == len(inputs):
+            log.info("[%s]  %d/%d", pipe.name, i, len(inputs))
+    if zip_it:
+        zp = io_utils.zip_submission(out_dir)
+        log.info("[%s] wrote %s", pipe.name, zp)
+
+
 class Pipeline:
+    """baseline/improved: GLiNER + ConText assertions + retrieval/rerank."""
+
     def __init__(
         self,
         ner: Optional[NERModel] = None,
@@ -92,9 +147,7 @@ class Pipeline:
         self.dedup_repeats = dedup_repeats
         self.max_repeats = max_repeats
 
-    # -- core -----------------------------------------------------------------
     def run_text(self, text: str) -> List[Concept]:
-        """Extract concepts from one raw record string."""
         if self.ner is None:
             return []
         spans: List[Span] = self.ner.predict(text)
@@ -103,7 +156,6 @@ class Pipeline:
             spans = clean_spans(text, spans, dedup_repeats=self.dedup_repeats,
                                 max_repeats=self.max_repeats)
 
-        # assertions (batch over all spans; applied only to assertable types)
         if self.assertion is not None and spans:
             labels_per_span = self.assertion.predict(text, spans)
         else:
@@ -120,24 +172,64 @@ class Pipeline:
                 c["candidates"] = []
             concepts.append(c)
 
-        # validate + clean + stable-order
         return validate_output(concepts, text)
 
     def run_file(self, path) -> List[Concept]:
         return self.run_text(io_utils.read_text(path))
 
     def run_dir(self, in_dir, out_dir, zip_it: bool = True) -> None:
-        """Run over all ``*.txt`` in ``in_dir``, write validated JSON, zip."""
-        in_dir, out_dir = Path(in_dir), Path(out_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        inputs = io_utils.list_inputs(in_dir)
-        log.info("[%s] running over %d files -> %s", self.name, len(inputs), out_dir)
-        for i, path in enumerate(inputs, 1):
-            text = io_utils.read_text(path)
-            concepts = self.run_text(text)
-            io_utils.write_record(out_dir, path.stem, concepts, text)
-            if i % 10 == 0 or i == len(inputs):
-                log.info("[%s]  %d/%d", self.name, i, len(inputs))
-        if zip_it:
-            zp = io_utils.zip_submission(out_dir)
-            log.info("[%s] wrote %s", self.name, zp)
+        _run_dir(self, in_dir, out_dir, zip_it)
+
+
+class PipelineV2:
+    """improved_v2: GLiNER (per-type thresholds) + consensus selector +
+    precision-first lexical linking + empty assertions.
+
+    Assertions are emitted empty: the dev-split assertions are sparse and the host scorer's
+    spurious double-penalty makes any over-firing rule strictly worse.
+    """
+
+    def __init__(self, ner, normalizer: Optional[Normalizer], selector=None,
+                 name: str = "improved_v2", trim_generic: bool = True):
+        self.ner = ner
+        self.normalizer = normalizer
+        self.selector = selector
+        self.name = name
+        # generic-prefix trim is the one measured boundary lever kept (on by default).
+        self.trim_generic = trim_generic
+
+    def _build_concepts(self, text: str, spans) -> List[Concept]:
+        from .ner.generic import is_header_span
+        concepts: List[dict] = []
+        for (s, e, typ) in spans:
+            line_start = text.rfind("\n", 0, s) + 1
+            if is_header_span(text, s, e, {"line_start": line_start}):
+                continue
+            c: dict = {"text": text[s:e], "position": [s, e], "type": typ,
+                       "assertions": []}
+            c["candidates"] = (self.normalizer.predict(text, (s, e, typ))
+                                if typ in CANDIDATE_TYPES and self.normalizer else [])
+            concepts.append(c)
+        return validate_output(concepts, text)
+
+    def run_text(self, text: str) -> List[Concept]:
+        from .models.registry import get_registry
+        from .ner.postprocess import clean_spans, trim_generic_prefix
+        get_registry().check_budget()
+        # capture raw GLiNER spans once (at raw_floor), then build the per-type-
+        # threshold baseline; the selector reuses `raw` for additions.
+        raw = self.ner.raw_scored_spans(text)
+        thr = self.ner.thresholds or {}
+        filt = [s for s in raw if s[2] not in thr or s[3] >= thr[s[2]]] if thr else list(raw)
+        spans = clean_spans(text, self.ner.resolve_overlaps(filt))
+        if self.selector is not None:               # TRIỆU→CHẨN corrector + additions
+            spans = self.selector.select(text, spans, raw)
+        if self.trim_generic:
+            spans = [trim_generic_prefix(text, span) for span in spans]
+        return self._build_concepts(text, spans)
+
+    def run_file(self, path) -> List[Concept]:
+        return self.run_text(io_utils.read_text(path))
+
+    def run_dir(self, in_dir, out_dir, zip_it: bool = True) -> None:
+        _run_dir(self, in_dir, out_dir, zip_it)

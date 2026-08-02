@@ -18,7 +18,7 @@ MAX_PARAMS = 9_000_000_000  # competition cap
 class LLMEngine:
     def __init__(
         self,
-        model_name: str = "/mnt/pretrained_fm/Qwen_Qwen3-8B",
+        model_name: str = "Qwen/Qwen3-8B",
         device: str = "wait",
         dtype: str = "bfloat16",
         max_new_tokens: int = 128,

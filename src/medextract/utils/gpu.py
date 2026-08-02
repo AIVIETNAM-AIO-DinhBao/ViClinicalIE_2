@@ -41,7 +41,7 @@ def wait_for_gpu(
     poll_seconds: int = 300,
     max_wait_hours: float = 12.0,
 ) -> Optional[int]:
-    """Block until a GPU with ≥ min_free_gb free VRAM appears; return its id.
+    """Wait until a GPU with ≥ min_free_gb free VRAM appears; return its id.
 
     Returns None only if no CUDA GPUs exist at all (caller falls back to CPU).
     Raises TimeoutError after max_wait_hours.

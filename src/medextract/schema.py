@@ -119,7 +119,11 @@ def clean_concept(c: dict, text: str) -> Concept:
     else:
         out["assertions"] = []
     if typ in CANDIDATE_TYPES:
-        out["candidates"] = list(dict.fromkeys(c.get("candidates", []) or []))
+        # drop empty/whitespace-only codes (dagger/asterisk codes E11.4†/F00.2* are
+        # valid strings and kept verbatim — never stripped)
+        out["candidates"] = list(dict.fromkeys(
+            c for c in (c.get("candidates", []) or []) if isinstance(c, str) and c.strip()
+        ))
     else:
         out["candidates"] = []
     return out

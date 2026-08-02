@@ -8,7 +8,7 @@ context window and fire assertion labels:
 * **isFamily**    — a family trigger ("mẹ", "chị gái", "gia đình" …) on the
   mention's **line**. Family history is expressed inline in these notes.
 * **isHistorical** — a history trigger ("tiền sử", "trước đó", "đã dùng" …) on the
-  line, or a section-header history cue governing the mention's block (e.g. a
+  line, or a section-header history cue governing the mention's segment (e.g. a
   pre-admission "thuốc … trước nhập viện" list makes every item historical).
 
 Matching is **word-boundary** based (regex), so short triggers like "anh" no
@@ -44,7 +44,7 @@ HISTORY_LINE = [
     "đã được chẩn đoán", "cách đây", "cách nhập viện", "trong quá khứ",
     "trước khi nhập viện", "trước nhập viện", "trước lúc nhập viện",
 ]
-# section-header cues that make a following block historical. Bare "tiền sử" is
+# section-header cues that make a following segment historical. Bare "tiền sử" is
 # handled specially (excluded when the section is "tiền sử gia đình" = family).
 # NOTE: excludes bare "bệnh sử" — ambiguous with "bệnh sử hiện tại" (= current).
 HISTORY_SECTION = [
@@ -55,10 +55,8 @@ HISTORY_SECTION = [
     "thuốc trước", "thuốc đang dùng", "tại nhà", "đang dùng tại nhà",
     "các sự kiện trước khi nhập viện",
 ]
-# section-header cues that make a following block a family-history section
+# section-header cues that make a following segment a family-history section
 FAMILY_SECTION = ["tiền sử gia đình", "gia đình", "bệnh sử gia đình"]
-# a line that opens a new top-level section (resets the governing context)
-SECTION_HEADER = None  # compiled below
 # markers after which a concept is an indication (don't inherit history)
 INDICATION = ["điều trị", "chỉ định", "dự phòng", "để", "cho"]
 # clause boundaries that reset the history scope inside a line
@@ -73,10 +71,6 @@ def _norm(s: str) -> str:
 def _compile(triggers: Sequence[str]) -> List[re.Pattern]:
     """Word-boundary regexes for each trigger (handles Vietnamese unicode)."""
     return [re.compile(r"(?<!\w)" + re.escape(_norm(t)) + r"(?!\w)") for t in triggers]
-
-
-# a top-level numbered section header line ("1. Tiền sử bệnh", "2. Bệnh sử …")
-_TOP_SECTION = re.compile(r"^\s*\d+[.)]\s+\S")
 
 
 class ContextRules(AssertionModel):
@@ -124,26 +118,6 @@ class ContextRules(AssertionModel):
             cur = prev_start
             lines_seen += 1
         return "\n".join(reversed(chunks))
-
-    def _governing_context(self, text: str, line_start: int, max_lines: int = 20) -> str:
-        """Preceding lines back to (and including) the nearest top-level numbered
-        section header — the section that governs this concept in a *structured*
-        note. Returns "" if no real section header is found, so section-scoped
-        assertions only fire on structured notes (not short unstructured ones)."""
-        cur, chunks, seen, found = line_start, [], 0, False
-        while cur > 0 and seen < max_lines:
-            prev_end = cur - 1
-            prev_start = text.rfind("\n", 0, prev_end) + 1
-            line = text[prev_start:prev_end]
-            if line.strip() == "":
-                break
-            chunks.append(line)
-            cur = prev_start
-            seen += 1
-            if _TOP_SECTION.match(line):  # reached the section header
-                found = True
-                break
-        return "\n".join(reversed(chunks)) if found else ""
 
     @staticmethod
     def _any(patterns: List[re.Pattern], haystack: str) -> bool:
@@ -194,7 +168,7 @@ class ContextRules(AssertionModel):
                 continue
             line_start, line_end = self._line_bounds(text, start)
             line = text[line_start:line_end]
-            # section block = preceding lines up to a blank line (sections in these
+            # section segment = preceding lines up to a blank line (sections in these
             # notes are blank-line separated); governs section-scoped assertions.
             section = self._block_before(text, line_start)
 

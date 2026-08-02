@@ -1,0 +1,76 @@
+# improved_v2 — GLiNER NER (per-type thresholds) + consensus selector +
+# precision-first lexical linking + empty assertions.
+#
+# Flow: GLiNER (per-type thresholds) -> clean_spans -> selector (TRIỆU->CHẨN
+#       corrector + non-candidate additions) -> exact-alias lookup (unique exact
+#       official alias) + ICD bare-category .9 remap -> max 1 -> validate -> ZIP.
+#
+# Design rationale:
+#  * Per-type GLiNER thresholds: the host scorer double-penalises spurious
+#    concepts, so NER keeps GLiNER's precision over recall; the text component
+#    peaks at these per-type cutoffs (selected on the dev split).
+#  * Assertions EMPTY: the dev-split assertions are sparse and any rule (negation
+#    / family / historical) over-fires, so emitting none maximises Jaccard.
+#  * Candidate linking precision-first (unique exact alias + .9 remap): a large
+#    share of target codes is unreachable by lexical match and spurious emission
+#    is heavily penalised, so only unique exact matches are emitted (max 1/type).
+#  * Additions target non-candidate types only: candidate-bearing additions
+#    inflate the candidate denominator and lower candidate-Jaccard.
+solution: improved_v2
+
+models:
+  # Parameter count: GLiNER 0.289B + Qwen3-4B 4.022B + Qwen3.5-4B 4.206B
+  # = 8.517B (< 9B budget). Rounded to 3 digits; matches the runtime registry.
+  max_total_parameters: 9000000000
+
+kb:
+  device: auto
+
+ner:
+  model: urchade/gliner_multi-v2.1
+  max_chunk_chars: 800
+  raw_floor: 0.02            # low capture floor so the selector can mine additions
+  # Per-type thresholds (selected on the dev split). The host double-penalty on
+  # spurious spans favours precision; these cutoffs peak the text component.
+  thresholds:
+    TRIỆU_CHỨNG: 0.20
+    CHẨN_ĐOÁN: 0.25
+    THUỐC: 0.30
+    TÊN_XÉT_NGHIỆM: 0.15
+    KẾT_QUẢ_XÉT_NGHIỆM: 0.35
+
+normalization:
+  max_candidates: {ICD10: 1, RXNORM: 1}
+
+# Two-teacher consensus selector: (1) CORRECTOR — primary five-way logits re-type
+# TRIỆU_CHỨNG -> CHẨN_ĐOÁN; (2) ADDITIONS — both teachers must agree on a
+# NON-candidate type (TRIỆU/TÊN_XÉT_NGHIỆM/KẾT_QUẢ) with sufficient NONE-margin
+# before a low-floor raw span is added. Single-token logits only (no generation).
+consensus_selector:
+  enabled: true
+  primary_model: Qwen/Qwen3-4B-Instruct-2507
+  secondary_model: Qwen/Qwen3.5-4B
+  # 'auto' lets each teacher pick a free GPU. The reference run places the two
+  # teachers on SEPARATE GPUs to avoid intra-GPU contention (both on one GPU is
+  # correct but slower); pin with cuda:N for explicit control. With
+  # quantization.mode: 4bit below, both teachers can share a single GPU.
+  primary_device: auto
+  secondary_device: auto
+  batch_size: 48
+  max_length: 384
+  addition_margin_none: 1.0
+  addition_types: [TRIỆU_CHỨNG, TÊN_XÉT_NGHIỆM, KẾT_QUẢ_XÉT_NGHIỆM]
+
+# Quantization. The 9B budget is on PARAMETER COUNT, not memory, so quantizing
+# the teachers does not change rule compliance. Defaults (mode: none, bfloat16)
+# reproduce the reference run; 4bit/8bit outputs may differ marginally.
+quantization:
+  mode: none          # none | 8bit | 4bit
+  dtype: bfloat16     # bfloat16 | float16 | float32  (used when mode: none)
+  compute_dtype: bfloat16   # 4bit compute dtype
+  double_quant: true  # only used when mode: 4bit
+
+# boundary.generic_prefix is the one measured boundary lever kept (ON): it trims
+# a leading "dấu hiệu/biểu hiện/tình trạng/hội chứng" when a full concept remains.
+boundary:
+  generic_prefix: true

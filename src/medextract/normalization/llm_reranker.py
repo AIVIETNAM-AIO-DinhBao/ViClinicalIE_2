@@ -63,8 +63,8 @@ class LLMRerankNormalizer(Normalizer):
 
     def _leaf_ify(self, codes: List[str]) -> List[str]:
         """Remap a bare 3-char ICD category to its ``.9`` (unspecified) leaf when
-        that leaf exists in the KB. Such categories are non-terminal, so gold
-        (always a leaf) is never the bare code — this can only turn a 0 into a 1."""
+        that leaf exists in the KB. Such categories are non-terminal, so mã đích
+        (gần như luôn là mã lá) không bao giờ là mã bare — phép này chỉ đổi 0 thành 1."""
         out = []
         for c in codes:
             if _ICD_CATEGORY.match(c) and f"{c}.9" in self.icd_codes:
@@ -85,30 +85,36 @@ class LLMRerankNormalizer(Normalizer):
         kb, mention, hits = self.retriever.retrieve(text, span, top_k=self.retrieve_k)
         if kb is None or not hits or not mention:
             return []
-        # dedup candidates by code, keep first (best-retrieved) name
-        seen, cands = set(), []
-        for code, name, _s, _tty in hits:
+        # dedup candidates by code, keep first (best-retrieved) name. The rerank
+        # template reads code/name/en/tty on every candidate (StrictUndefined), so
+        # all four keys are always present; the retriever has no English alias, so
+        # ``en`` is empty and the template skips the "(en)" hint.
+        cands, seen = [], set()
+        for code, name, _s, tty in hits:
             if code not in seen:
                 seen.add(code)
-                cands.append({"code": code, "name": name})
+                cands.append({"code": code, "name": name, "en": "", "tty": tty})
         # ICD: drop a bare 3-char category code when a sub-code of it is present,
-        # so the LLM must choose a specific leaf (gold is virtually always a leaf).
+        # so the LLM must choose a specific leaf (mã đích gần như luôn là mã lá).
         if kb == "ICD10":
             leaves = {c["code"].split(".")[0] for c in cands if "." in c["code"]}
             cands = [c for c in cands
                      if not (_ICD_CATEGORY.match(c["code"]) and c["code"] in leaves)]
         cap = self.max_candidates.get(kb, 2)
-        prompt = render("candidate_rerank", mention=mention, kb=kb,
-                        sentence=self._sentence(text, span), candidates=cands, max_codes=cap)
+        # valid codes are exactly the candidates left AFTER the category filter,
+        # so the LLM can never return a code we dropped.
+        valid = {c["code"] for c in cands}
         try:
+            prompt = render("candidate_rerank", mention=mention, kb=kb,
+                            sentence=self._sentence(text, span),
+                            candidates=cands, max_codes=cap)
             out = self.engine.complete(prompt, max_new_tokens=self.max_new_tokens)
-        except Exception as e:  # pragma: no cover - soft-fail to retriever top-1
-            log.warning("LLM rerank failed (%s); falling back to retriever", e)
+        except Exception as e:  # pragma: no cover - render or engine failure
+            log.warning("LLM rerank failed (%s); falling back to retriever top-1", e)
             return [cands[0]["code"]] if cands else []
-        codes = _parse_codes(out, seen)
         # When the LLM returns nothing it means "no confident match" — we keep it
         # empty rather than forcing the retriever top-1 (empty is usually correct).
-        codes = codes[:cap]
+        codes = _parse_codes(out, valid)[:cap]
         if kb == "ICD10":
             codes = self._leaf_ify(codes)
         return codes
@@ -131,7 +137,7 @@ def from_config(cfg: dict, engine=None) -> Normalizer:
     if engine is None:
         lcfg = (cfg or {}).get("llm", {}) or {}
         engine = LLMEngine(
-            model_name=lcfg.get("model", "/mnt/pretrained_fm/Qwen_Qwen3-8B"),
+            model_name=lcfg.get("model", "Qwen/Qwen3-8B"),
             device=lcfg.get("device", "wait"),
             dtype=lcfg.get("dtype", "bfloat16"),
             min_free_gb=lcfg.get("min_free_gb", 18.0),

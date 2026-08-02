@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..schema import CONCEPT_TYPE_SET, Span
 from .base import NERModel
@@ -20,8 +20,9 @@ log = logging.getLogger("medextract.ner.gliner")
 
 # a dosage/route/frequency token that should be pulled into a drug span
 _DOSE_TOKEN = re.compile(
-    r"^(\d+([.,\-/]\d+)*"                                  # 10, 0.5, 325-650
-    r"|mg|mcg|ug|g|ml|iu|x|%"                              # units
+    r"^(\d+([.,\-/]\d+)*%?"                                # 10, 0.5, 0.9%, 325-650, 5/5
+    r"|\d+\s*(mg|mcg|ug|g|ml|iu|meq|mmol)\b"               # combined: 325mg, 40mg, 0.9%
+    r"|mg|mcg|µg|ug|g|ml|iu|x|%"                           # bare units
     r"|po|iv|im|sc|sl|pr|tab"                              # routes
     r"|(q\d+h|qd|qid|qod|bid|tid|qhs|qam|qpm|prn|daily)(:prn)?"  # freq (+opt :prn)
     r")$",
@@ -46,9 +47,11 @@ class GLiNERNER(NERModel):
         model_name: str = "urchade/gliner_multi-v2.1",
         label_map: Optional[Dict[str, str]] = None,
         threshold: float = 0.5,
+        thresholds: Optional[Dict[str, float]] = None,
         max_chunk_chars: int = 1200,
         max_chunk_tokens: Optional[int] = None,
         device: str = "auto",
+        raw_floor: Optional[float] = None,
     ):
         from gliner import GLiNER
 
@@ -56,7 +59,16 @@ class GLiNERNER(NERModel):
 
         self.label_map = label_map or DEFAULT_LABEL_MAP
         self.labels = list(self.label_map.keys())
-        self.threshold = threshold
+        self.thresholds = thresholds or {}
+        # capture a superset at the lowest per-type threshold, then filter per type
+        # before overlap resolution (a low-threshold span still loses to a higher-
+        # scoring overlapping span of another type). raw_floor lowers the capture
+        # floor further so a downstream consensus selector can mine additions; the
+        # per-type `thresholds` still gate the baseline spans.
+        if raw_floor is not None:
+            self.threshold = raw_floor
+        else:
+            self.threshold = min(thresholds.values()) if self.thresholds else threshold
         self.max_chunk_chars = max_chunk_chars
         # When set, chunk by TOKEN budget (GLiNER truncates at 384 tokens; char-based
         # 800 exceeds that on ~8% of dense chunks, silently dropping their tails).
@@ -69,6 +81,14 @@ class GLiNERNER(NERModel):
             self.model = self.model.to(self.device)
         except Exception:  # some GLiNER versions manage device internally
             pass
+        from ..models.registry import count_parameters, get_registry
+        self.nparams = count_parameters(self.model)
+        get_registry().register(
+            model_name.rstrip("/").split("/")[-1],
+            "ner",
+            self.nparams,
+            device=self.device,
+        )
 
     # -- chunking -------------------------------------------------------------
     def _tok_count(self, s: str) -> int:
@@ -120,9 +140,9 @@ class GLiNERNER(NERModel):
     def _extend_drug_span(text: str, start: int, end: int) -> int:
         """Extend a THUỐC span rightward over trailing dosage/route/freq tokens.
 
-        Gold drug spans include strength/route ("amlodipine 10 mg po daily") which
-        GLiNER usually clips to the name. We absorb following ASCII dosage tokens up
-        to end-of-line, stopping at a Vietnamese indication marker.
+        Quy ước đề bài: span THUỐC giữ kèm hàm lượng/đường dùng ("amlodipine 10 mg
+        po daily") — GLiNER thường cắt chỉ còn tên thuốc. Ta hấp thụ các token
+        dosage ASCII theo sau đến hết dòng, dừng tại một chỉ định (indication) tiếng Việt.
         """
         line_end = text.find("\n", end)
         if line_end == -1:
@@ -145,7 +165,7 @@ class GLiNERNER(NERModel):
         return new_end
 
     @staticmethod
-    def _resolve_overlaps(spans: List[Tuple[int, int, str, float]]) -> List[Span]:
+    def resolve_overlaps(spans: List[Tuple[int, int, str, float]]) -> List[Span]:
         """Drop overlapping spans, preferring higher score then shorter length."""
         spans = sorted(spans, key=lambda s: (-s[3], s[0] - s[1]))
         kept: List[Tuple[int, int, str, float]] = []
@@ -157,7 +177,13 @@ class GLiNERNER(NERModel):
         return [(s[0], s[1], s[2]) for s in kept]
 
     # -- API ------------------------------------------------------------------
-    def predict(self, text: str) -> List[Span]:
+    def raw_scored_spans(self, text: str) -> List[Tuple[int, int, str, float]]:
+        """Raw scored spans across all chunks, *before* overlap resolution.
+
+        Exposed so ``improved_v2`` can build a span lattice (with overlaps kept)
+        on top of the same chunking logic the baseline uses. ``predict`` is an
+        unchanged thin wrapper over this + :meth:`_resolve_overlaps`.
+        """
         raw: List[Tuple[int, int, str, float]] = []
         for gstart, chunk in self._chunks(text):
             if not chunk.strip():
@@ -177,7 +203,14 @@ class GLiNERNER(NERModel):
                     en = self._extend_drug_span(text, s, en)
                 if s < en:
                     raw.append((s, en, typ, float(e.get("score", 1.0))))
-        return self._resolve_overlaps(raw)
+        return raw
+
+    def predict(self, text: str) -> List[Span]:
+        raw = self.raw_scored_spans(text)
+        if self.thresholds:
+            raw = [s for s in raw
+                   if s[2] not in self.thresholds or s[3] >= self.thresholds[s[2]]]
+        return self.resolve_overlaps(raw)
 
 
 def from_config(cfg: dict) -> GLiNERNER:
@@ -186,7 +219,9 @@ def from_config(cfg: dict) -> GLiNERNER:
         model_name=n.get("model", "urchade/gliner_multi-v2.1"),
         label_map=n.get("label_map", DEFAULT_LABEL_MAP),
         threshold=n.get("threshold", 0.5),
+        thresholds=n.get("thresholds"),
         max_chunk_chars=n.get("max_chunk_chars", 1200),
         max_chunk_tokens=n.get("max_chunk_tokens"),
         device=(cfg or {}).get("kb", {}).get("device", "auto"),
+        raw_floor=n.get("raw_floor"),
     )

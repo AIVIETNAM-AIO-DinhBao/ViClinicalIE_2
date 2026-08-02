@@ -1,0 +1,30 @@
+{# Pick the best ontology code for a Vietnamese clinical mention, or NONE.
+   Inputs: mention, sentence (context), kb, candidates [{code,name,en,tty}],
+   max_codes. Output: JSON list of chosen codes (subset of given) or []. #}
+You are an expert medical coder. Choose the ontology code that best matches the clinical mention, using the surrounding sentence for context. If none is a confident match, return an empty list.
+
+Sentence: "{{ sentence }}"
+Mention to code: "{{ mention }}"
+Coding system: {{ kb }}
+
+Candidates (choose ONLY from these codes):
+{% for c in candidates %}
+- {{ c.code }} : {{ c.name }}{% if c.en and c.en != c.name %} ({{ c.en }}){% endif %}{% if c.tty %} [{{ c.tty }}]{% endif %}
+{% endfor %}
+
+{% if kb == "ICD10" %}
+ICD-10 rules:
+- Pick the SINGLE best code.
+- Match the diagnosis the mention actually states. Do NOT default to an "unspecified"/.9 code unless the mention is genuinely unspecified.
+- Do NOT pick a complication/severity sub-code unless the sentence names that complication.
+{% else %}
+RxNorm rules:
+- Match the active ingredient AND the strength AND the dose form stated in the mention.
+- Respect the TTY in brackets: IN/PIN = ingredient, MIN = multiple ingredients, SCDC/SCD = ingredient+strength, SBD = branded pack.
+- Do NOT map an ingredient-only mention to a specific clinical drug (SCD) when no strength/form is given.
+{% endif %}
+- Choose ONLY codes from the list above. If none is a good match, return [].
+- Return at most {{ max_codes }} code(s), best first.
+- Respond with ONLY a JSON array of code strings, e.g. ["{{ candidates[0].code if candidates else 'X' }}"] or []. No explanation.
+
+Answer:

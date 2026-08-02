@@ -5,7 +5,7 @@ ICD-10 / RxNorm normalization, producing the host submission JSON.
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 
 def set_seed(seed: int = 42) -> None:

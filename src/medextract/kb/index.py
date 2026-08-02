@@ -111,7 +111,12 @@ class KBIndex:
         """
         if self.encoder is None:
             raise RuntimeError("KBIndex has no encoder; construct/load with one")
-        q = self.encoder.encode([mention])
+        # encoders with distinct query/passage modes (Qwen3-Embedding, E5-instruct)
+        # expose encode_queries; SapBERT has a single encode() for both.
+        encode_query = (getattr(self.encoder, "encode_queries", None)
+                        or getattr(self.encoder, "encode_query", None)
+                        or self.encoder.encode)
+        q = encode_query([mention])
         scores, idx = self.index.search(q, min(top_k, self.index.ntotal))
         has_tty = "tty" in self.meta.columns
         out = []

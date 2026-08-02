@@ -1,4 +1,4 @@
-"""I/O helpers: read inputs, write/validate/zip submission, gold adapters.
+"""I/O helpers: read inputs, write/validate/zip submission, reference-label adapters.
 
 The writer *guarantees* ``input[start:end] == concept["text"]`` (WER depends on
 it), UTF-8 with ``ensure_ascii=False``, and stable ordering by position.
@@ -9,7 +9,7 @@ import json
 import os
 import zipfile
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 from .schema import Concept, validate_output
 
@@ -43,6 +43,29 @@ def read_json(path: os.PathLike | str) -> list:
         return json.load(f)
 
 
+def read_concepts(path: os.PathLike | str) -> list:
+    """Read a ``{stem}.json`` record as a concept list.
+
+    Accepts either a bare JSON list of concepts or a dict carrying a
+    ``concepts`` key, so the scorer reads files the same way regardless of which layout a run wrote.
+    """
+    data = read_json(path)
+    if isinstance(data, dict) and "concepts" in data:
+        return data["concepts"]
+    return data
+
+
+def configure_offline(enabled: bool) -> None:
+    """Force Hugging Face Hub offline mode when ``enabled``.
+
+    Only acts when enabled, so the default (no ``--offline``) leaves the
+    environment untouched and ``run.py`` behaves the same.
+    """
+    if enabled:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+
 def write_record(out_dir: os.PathLike | str, stem: str, concepts: list, text: str) -> List[Concept]:
     """Validate + clean concepts for one record and write ``<stem>.json``.
 
@@ -63,15 +86,3 @@ def zip_submission(out_dir: os.PathLike | str, zip_name: str = "submission.zip")
         for jp in jsons:
             zf.write(jp, arcname=jp.name)
     return zip_path
-
-
-def load_gold_dir(gold_dir: os.PathLike | str) -> Dict[str, list]:
-    """Load gold annotations ``<stem>.json`` -> list[concept].
-
-    The dev gold already follows the submission schema, so this is a passthrough
-    keyed by file stem.  If a future gold format diverges, adapt it here.
-    """
-    gold: Dict[str, list] = {}
-    for jp in sorted(Path(gold_dir).glob("*.json")):
-        gold[jp.stem] = read_json(jp)
-    return gold
