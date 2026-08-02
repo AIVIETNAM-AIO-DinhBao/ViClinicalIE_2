@@ -20,7 +20,9 @@ data/kb/raw/*
 !data/kb/raw/README.md
 !data/kb/raw/Phu_luc_Bang_danh_muc_ICD10_FINAL_TT06_2026.xlsx
 data/kb/processed/
-data/input/
+data/input/*
+!data/input/
+!data/input/*.txt
 data/synthetic/
 data/dev/
 *.parquet
