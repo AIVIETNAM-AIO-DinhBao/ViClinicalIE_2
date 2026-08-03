@@ -16,7 +16,6 @@ dist/
 .pytest_cache/
 
 # Downloaded / generated knowledge bases (large, re-buildable)
-data/kb/raw/*
 !data/kb/raw/README.md
 !data/kb/raw/Phu_luc_Bang_danh_muc_ICD10_FINAL_TT06_2026.xlsx
 data/kb/processed/
@@ -27,7 +26,6 @@ data/synthetic/
 data/dev/
 *.parquet
 *.faiss
-*.RRF
 *.csv
 
 # Model weights & indexes
