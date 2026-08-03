@@ -8,7 +8,7 @@ A single config-driven entry point. ``build_pipeline`` dispatches on the
   candidates).
 * ``improved_v2`` — :class:`PipelineV2`: GLiNER NER (per-type thresholds) + a
   two-teacher consensus selector (TRIỆU→CHẨN correction + non-candidate additions)
-  + precision-first lexical linking + empty assertions.
+  + precision-first lexical linking + optional conservative Qwen-verified assertions.
 
 The host scorer double-penalises spurious concepts, so ``improved_v2`` keeps
 GLiNER's precision over higher recall and links candidates only on a unique exact
@@ -182,11 +182,11 @@ class Pipeline:
 
 
 class PipelineV2:
-    """improved_v2: GLiNER (per-type thresholds) + consensus selector +
-    precision-first lexical linking + empty assertions.
+    """improved_v2: GLiNER + consensus selector + precision-first linking.
 
-    Assertions are emitted empty: the dev-split assertions are sparse and the host scorer's
-    spurious double-penalty makes any over-firing rule strictly worse.
+    Assertions default to empty. When ``assertion_selector.enabled`` is true, the
+    existing Qwen teachers verify only sparse ConText assertion candidates with
+    strict binary-logit margins; uncertain labels are dropped.
     """
 
     def __init__(self, ner, normalizer: Optional[Normalizer], selector=None,
@@ -200,13 +200,23 @@ class PipelineV2:
 
     def _build_concepts(self, text: str, spans) -> List[Concept]:
         from .ner.generic import is_header_span
-        concepts: List[dict] = []
-        for (s, e, typ) in spans:
+        kept_spans = []
+        for span in spans:
+            s, e, _typ = span
             line_start = text.rfind("\n", 0, s) + 1
             if is_header_span(text, s, e, {"line_start": line_start}):
                 continue
+            kept_spans.append(span)
+
+        if self.selector is not None and hasattr(self.selector, "predict_assertions"):
+            labels_per_span = self.selector.predict_assertions(text, kept_spans)
+        else:
+            labels_per_span = [[] for _ in kept_spans]
+
+        concepts: List[dict] = []
+        for (s, e, typ), labels in zip(kept_spans, labels_per_span):
             c: dict = {"text": text[s:e], "position": [s, e], "type": typ,
-                       "assertions": []}
+                       "assertions": list(labels) if typ in ASSERTABLE_TYPES else []}
             c["candidates"] = (self.normalizer.predict(text, (s, e, typ))
                                 if typ in CANDIDATE_TYPES and self.normalizer else [])
             concepts.append(c)

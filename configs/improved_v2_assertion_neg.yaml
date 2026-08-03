@@ -1,0 +1,25 @@
+# Phase 4 A1 — current improved_v2/T1 baseline plus ultra-conservative
+# Qwen-confirmed negation assertions.
+#
+# This inherits all NER thresholds, consensus selector settings, exact-alias
+# linking, and quantization defaults from improved_v2.yaml. The only behavioural
+# change is assertion post-processing:
+#   ConText negation cue -> primary Qwen binary verifier -> secondary Qwen binary
+#   verifier -> emit isNegated only if both YES-vs-NO margins pass.
+# Otherwise assertions stay empty.
+extends: improved_v2.yaml
+
+assertions:
+  # Keep the proposer narrow. These values mirror the legacy conservative window
+  # and are only used to create candidates; Qwen must still confirm them.
+  neg_window_chars: 60
+  block_lookback_lines: 6
+
+assertion_selector:
+  enabled: true
+  labels: [isNegated]
+  # Initial submission-safe margins. If audit shows too few assertions, try 1.5;
+  # if false positives appear, raise to 2.5 or 3.0.
+  primary_margin: 2.0
+  secondary_margin: 2.0
+  context_window_chars: 180

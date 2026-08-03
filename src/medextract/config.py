@@ -59,6 +59,9 @@ KNOWN_CONFIG_LEAVES: set[str] = {
     "consensus_selector.secondary_device", "consensus_selector.batch_size",
     "consensus_selector.max_length", "consensus_selector.addition_margin_none",
     "consensus_selector.addition_types",
+    "assertion_selector.enabled", "assertion_selector.labels",
+    "assertion_selector.primary_margin", "assertion_selector.secondary_margin",
+    "assertion_selector.context_window_chars",
     "quantization.mode", "quantization.dtype",
     "quantization.compute_dtype", "quantization.double_quant",
     "boundary.generic_prefix",
@@ -67,6 +70,7 @@ KNOWN_CONFIG_LEAVES: set[str] = {
 
 KNOWN_CONFIG_CONTAINERS: set[str] = {
     "ner.label_map", "ner.thresholds",
+    "assertions.triggers",
     "normalization.max_candidates", "normalization.cutoffs",
     "normalization.filter_tty",
     "normalization.llm_rerank.max_candidates",

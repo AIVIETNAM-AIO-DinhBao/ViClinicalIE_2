@@ -3,7 +3,7 @@
 
 Runs four checks, prints one PASS/FAIL line each, and exits 1 if any FAIL.
 
-  CONFIG   the three shipped YAMLs load and have no orphan config keys
+  CONFIG   the shipped YAMLs load and have no orphan config keys
   IMPORTS  every src/medextract module imports cleanly
   SCHEMA   validate_output accepts a valid concept and rejects three bad ones
   PATHS    every repo path named in README/INSTALL/docs/notebooks exists
@@ -21,15 +21,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-CONFIGS = ["configs/baseline.yaml", "configs/improved.yaml", "configs/improved_v2.yaml"]
+CONFIGS = [
+    "configs/baseline.yaml",
+    "configs/improved.yaml",
+    "configs/improved_v2.yaml",
+    "configs/improved_v2_assertion_neg.yaml",
+]
 
 
 def check_config():
     from medextract.config import load_config, orphan_config_keys
 
     yamls = sorted(p.name for p in (ROOT / "configs").glob("*.yaml"))
-    if yamls != ["baseline.yaml", "improved.yaml", "improved_v2.yaml"]:
-        return False, f"expected exactly 3 configs, found {yamls}"
+    expected = [Path(rel).name for rel in CONFIGS]
+    if yamls != expected:
+        return False, f"expected configs {expected}, found {yamls}"
     orphans = []
     for rel in CONFIGS:
         try:
@@ -40,7 +46,7 @@ def check_config():
             orphans.append(f"{rel}:{k}")
     if orphans:
         return False, f"orphan keys: {orphans[:5]}"
-    return True, "3 configs load, no orphan keys"
+    return True, f"{len(CONFIGS)} configs load, no orphan keys"
 
 
 def check_imports():
@@ -99,7 +105,8 @@ def check_paths():
     except runtime-created / build-output / upload dirs."""
     ref = re.compile(r"(?:docs|configs|scripts|src|data|examples|notebooks|prompts)/[A-Za-z0-9_./-]+")
     _exempt = ("out/", "demo_input", "data/kb/processed", "data/kb/raw/",
-               "data/input", "data/synthetic", "data/dev", "colab_t4.yaml")
+               "data/input", "data/synthetic", "data/dev", "colab_t4.yaml",
+               "docs/03_improved.md", "data/sample_input")
     doc_files = ["README.md", "INSTALL.md"]
     doc_files += sorted(str(p.relative_to(ROOT)) for p in (ROOT / "docs").glob("*.md"))
     doc_files += sorted(str(p.relative_to(ROOT)) for p in (ROOT / "notebooks").glob("*.ipynb"))
